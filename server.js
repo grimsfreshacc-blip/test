@@ -3,19 +3,19 @@ require('dotenv').config();
 const express = require('express');
 const fetch = require('node-fetch');
 const path = require('path');
-const fs = require('fs');
 const { Client, GatewayIntentBits, Collection } = require('discord.js');
+const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// ------------------ In-memory stores ------------------
-const userTokens = new Map();       // discordId → tokens
-const oauthState = new Map();       // state → discordId + metadata
+// Store tokens in memory
+const userTokens = new Map();
+const oauthState = new Map();
 
-// ------------------ Epic OAuth Config ------------------
+// ---------- Epic OAuth ----------
 const EPIC = {
   clientId: process.env.EPIC_CLIENT_ID,
   clientSecret: process.env.EPIC_CLIENT_SECRET,
@@ -24,7 +24,7 @@ const EPIC = {
   tokenUrl: 'https://account-public-service-prod.ol.epicgames.com/account/api/oauth/token'
 };
 
-// Build login URL
+// Build Epic Games login URL
 function buildEpicAuthUrl(discordId, returnTo = '/') {
   const state = `${discordId}:${uuidv4()}`;
   oauthState.set(state, { discordId, returnTo, created: Date.now() });
@@ -40,7 +40,7 @@ function buildEpicAuthUrl(discordId, returnTo = '/') {
   return `${EPIC.authUrl}?${params.toString()}`;
 }
 
-// Exchange auth code for tokens
+// Exchange Epic OAuth code for access token
 async function exchangeCodeForToken(code) {
   const body = new URLSearchParams({
     grant_type: 'authorization_code',
@@ -56,37 +56,47 @@ async function exchangeCodeForToken(code) {
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
   });
 
-  if (!res.ok) throw new Error(`Token exchange failed: ${await res.text()}`);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error('Token exchange failed: ' + text);
+  }
+
   return res.json();
 }
 
-// Placeholder function — replace with correct Epic endpoint later
+// Get Epic account basic info
 async function getAccountInfo(accessToken) {
   const res = await fetch(
     'https://account-public-service-prod.ol.epicgames.com/account/api/public/account',
     { headers: { Authorization: `Bearer ${accessToken}` } }
   );
+
   if (!res.ok) return null;
   return res.json();
 }
 
-// ------------------ Express Routes ------------------
-app.get('/', (_, res) => res.send('Skinchecker server running.'));
+// ---------- Express Routes ----------
 
-// Start Epic OAuth
-app.get('/auth/start', (req, res) => {
-  const { discordId } = req.query;
-  if (!discordId) return res.status(400).send('Missing discordId');
-  return res.redirect(buildEpicAuthUrl(discordId));
+// Home
+app.get('/', (req, res) => {
+  res.send('Skinchecker server running ✔️');
 });
 
-// OAuth callback
+// Start Epic login
+app.get('/auth/start', (req, res) => {
+  const discordId = req.query.discordId;
+  if (!discordId) return res.status(400).send('Missing discordId');
+  const url = buildEpicAuthUrl(discordId);
+  return res.redirect(url);
+});
+
+// Epic OAuth callback route
 app.get('/auth/callback', async (req, res) => {
   const { code, state } = req.query;
-  if (!code || !state) return res.status(400).send('Missing code or state.');
+  if (!code || !state) return res.status(400).send('Missing code or state');
 
   const st = oauthState.get(state);
-  if (!st) return res.status(400).send('Invalid or expired state.');
+  if (!st) return res.status(400).send('Invalid state');
 
   try {
     const tokenData = await exchangeCodeForToken(code);
@@ -96,55 +106,44 @@ app.get('/auth/callback', async (req, res) => {
     return res.send(`
       <html>
       <body style="font-family: sans-serif;">
-        <h2>Login Complete</h2>
-        <p>You can now close this window and return to Discord.</p>
+        <h2>Login Successful ✔️</h2>
+        <p>You may now close this window.</p>
       </body>
       </html>
     `);
   } catch (err) {
     console.error(err);
-    res.status(500).send('Token exchange failed.');
+    return res.status(500).send('Token exchange failed.');
   }
 });
 
-// Debug-only route
+// Debug tokens route
 app.get('/__tokens/:discordId', (req, res) => {
   if (!process.env.DEBUG_TOKENS) return res.status(403).send('Disabled.');
   res.json({ token: userTokens.get(req.params.discordId) || null });
 });
 
-// ------------------ Discord Bot ------------------
+// ---------- Discord Bot ----------
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 client.commands = new Collection();
 
-// Create /commands folder if missing
-const commandsPath = path.join(__dirname, 'commands');
-if (!fs.existsSync(commandsPath)) {
-  fs.mkdirSync(commandsPath);
-  console.log('Created missing /commands folder.');
-}
-
-// Load commands safely
-const commandFiles = fs
-  .readdirSync(commandsPath)
-  .filter(f => f.endsWith('.js'));
-
-if (commandFiles.length === 0) {
-  console.warn('⚠ No commands found in /commands folder.');
-}
+// Load command files from commands/commands/
+const commandsPath = path.join(__dirname, 'commands', 'commands');
+const commandFiles = fs.readdirSync(commandsPath).filter(f => f.endsWith('.js'));
 
 for (const file of commandFiles) {
-  const cmd = require(path.join(commandsPath, file));
+  const filePath = path.join(commandsPath, file);
+  const cmd = require(filePath);
   client.commands.set(cmd.data.name, cmd);
 }
 
-client.on('ready', () =>
-  console.log(`Discord logged in as ${client.user.tag}`)
-);
+client.on('ready', () => {
+  console.log(`Logged in as ${client.user.tag}`);
+});
 
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
-  
+
   const command = client.commands.get(interaction.commandName);
   if (!command) return;
 
@@ -154,19 +153,19 @@ client.on('interactionCreate', async interaction => {
       userTokens,
       getAccountInfo
     });
-  } catch (err) {
-    console.error(err);
-    const reply = { content: 'Error executing command.', ephemeral: true };
-    interaction.replied || interaction.deferred
-      ? interaction.followUp(reply)
-      : interaction.reply(reply);
+  } catch (error) {
+    console.error(error);
+    if (interaction.replied || interaction.deferred) {
+      interaction.followUp({ content: 'Error executing command.', ephemeral: true });
+    } else {
+      interaction.reply({ content: 'Error executing command.', ephemeral: true });
+    }
   }
 });
 
+// Log in bot
 client.login(process.env.TOKEN);
 
-// ------------------ Start Express Server ------------------
+// Start Express server
 const port = process.env.PORT || 3000;
-app.listen(port, () =>
-  console.log(`Express listening on http://localhost:${port}`)
-);
+app.listen(port, () => console.log(`Express listening on ${port}`));
