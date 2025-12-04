@@ -13,10 +13,10 @@ app.use(express.urlencoded({ extended: true }));
 
 // In-memory store: discordId -> token object
 const userTokens = new Map();
-// temporary state store for OAuth: state -> discordId
+// temporary OAuth state store
 const oauthState = new Map();
 
-// ---------- Epic OAuth helpers ----------
+// ---------- EPIC OAUTH CONFIG ----------
 const EPIC = {
   clientId: process.env.EPIC_CLIENT_ID,
   clientSecret: process.env.EPIC_CLIENT_SECRET,
@@ -25,21 +25,22 @@ const EPIC = {
   tokenUrl: 'https://account-public-service-prod.ol.epicgames.com/account/api/oauth/token'
 };
 
-// build auth url with state containing discordId
 function buildEpicAuthUrl(discordId, returnTo = '/') {
   const state = `${discordId}:${uuidv4()}`;
   oauthState.set(state, { discordId, returnTo, created: Date.now() });
+
   const params = new URLSearchParams({
     client_id: EPIC.clientId,
     response_type: 'code',
-    scope: 'basic_profile', // adjust scopes if needed
+    scope: 'basic_profile',
     redirect_uri: EPIC.redirectUri,
     state
   });
+
   return `${EPIC.authUrl}?${params.toString()}`;
 }
 
-// exchange code for tokens (client_credentials + auth code flow)
+// Exchange auth code for tokens
 async function exchangeCodeForToken(code) {
   const body = new URLSearchParams({
     grant_type: 'authorization_code',
@@ -56,106 +57,117 @@ async function exchangeCodeForToken(code) {
   });
 
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error('Token exchange failed: ' + text);
+    const err = await res.text();
+    throw new Error('Epic OAuth failed: ' + err);
   }
+
   return res.json();
 }
 
-// Example fetch for account info (placeholder - Epic endpoints vary)
+// Placeholder locker request
 async function getAccountInfo(accessToken) {
-  // This is a placeholder call — replace with correct Epic API calls to get locker/entitlements
-  const res = await fetch('https://account-public-service-prod.ol.epicgames.com/account/api/public/account', {
-    headers: { Authorization: `Bearer ${accessToken}` }
-  });
-  if (!res.ok) return null;
-  return res.json();
+  return { skins: [], pickaxes: [], emotes: [] }; // will upgrade later
 }
 
-// ---------- Express routes ----------
+// -------- EXPRESS ROUTES --------
 
-// Simple home
+// Home
 app.get('/', (req, res) => {
-  res.send('Skinchecker server running.');
+  res.send('Skinchecker server is running.');
 });
 
-// Route used by the bot button - starts OAuth flow
-// Expect ?discordId=XYZ OR from bot we embed link with state generation
+// Start OAuth login
 app.get('/auth/start', (req, res) => {
   const discordId = req.query.discordId;
-  if (!discordId) return res.status(400).send('Missing discordId query param.');
+  if (!discordId) return res.status(400).send("Missing ?discordId=");
+
   const url = buildEpicAuthUrl(discordId);
-  return res.redirect(url);
+  res.redirect(url);
 });
 
-// OAuth callback from Epic
+// OAuth callback
 app.get('/auth/callback', async (req, res) => {
   const { code, state } = req.query;
-  if (!code || !state) return res.status(400).send('Missing code or state.');
+
+  if (!code || !state)
+    return res.status(400).send("Missing required parameters.");
 
   const st = oauthState.get(state);
-  if (!st) return res.status(400).send('Invalid or expired state.');
+  if (!st)
+    return res.status(400).send("Invalid or expired OAuth state.");
 
   try {
     const tokenData = await exchangeCodeForToken(code);
-    // store tokenData for the Discord user
+
     userTokens.set(st.discordId, tokenData);
     oauthState.delete(state);
+
     return res.send(`
       <html>
-        <body style="font-family:sans-serif;">
-          <h2>Login complete</h2>
-          <p>You can now close this window and return to Discord.</p>
+        <body style="font-family: Arial; text-align:center; margin-top:50px;">
+          <h1>Login Successful!</h1>
+          <p>You may now return to Discord.</p>
         </body>
       </html>
     `);
   } catch (err) {
     console.error(err);
-    return res.status(500).send('Token exchange failed.');
+    return res.status(500).send("OAuth login failed.");
   }
 });
 
-// Endpoint to inspect token (dev only)
-app.get('/__tokens/:discordId', (req, res) => {
-  const { discordId } = req.params;
-  if (!process.env.DEBUG_TOKENS) return res.status(403).send('Disabled.');
-  const t = userTokens.get(discordId) || null;
-  res.json({ token: t });
+// Inspect tokens (DEV ONLY)
+app.get('/__debug/tokens/:id', (req, res) => {
+  if (!process.env.DEBUG_TOKENS) return res.status(403).send("Disabled");
+  res.json(userTokens.get(req.params.id) || {});
 });
 
-// ---------- Discord bot portion ----------
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+// ---------- DISCORD BOT ----------
+const client = new Client({
+  intents: [GatewayIntentBits.Guilds]
+});
+
 client.commands = new Collection();
 
-// load commands folder
-const commandFiles = fs.readdirSync(path.join(__dirname, 'commands')).filter(f => f.endsWith('.js'));
+// Load /commands
+const commandFiles = fs
+  .readdirSync(path.join(__dirname, "commands"))
+  .filter(f => f.endsWith(".js"));
+
 for (const file of commandFiles) {
-  const cmd = require(path.join(__dirname, 'commands', file));
-  client.commands.set(cmd.data.name, cmd);
+  const command = require(path.join(__dirname, "commands", file));
+  client.commands.set(command.data.name, command);
 }
 
-client.on('ready', () => {
-  console.log(`Discord logged in as ${client.user.tag}`);
+client.on("ready", () => {
+  console.log(`Logged in as ${client.user.tag}`);
 });
 
-client.on('interactionCreate', async interaction => {
+// Interaction handler
+client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
+
   const command = client.commands.get(interaction.commandName);
   if (!command) return;
+
   try {
-    await command.execute(interaction, { buildEpicAuthUrl, userTokens, getAccountInfo });
-  } catch (err) {
-    console.error(err);
-    if (interaction.replied || interaction.deferred) {
-      await interaction.followUp({ content: 'Error executing command.', ephemeral: true });
-    } else {
-      await interaction.reply({ content: 'Error executing command.', ephemeral: true });
-    }
+    await command.execute(interaction, {
+      buildEpicAuthUrl,
+      userTokens,
+      getAccountInfo
+    });
+  } catch (error) {
+    console.error(error);
+    await interaction.reply({
+      content: "There was an error executing this command.",
+      ephemeral: true
+    });
   }
 });
 
-client.login(process.env.TOKEN);
+// LOGIN BOT  (FIXED)
+client.login(process.env.DISCORD_BOT_TOKEN);
 
-// start express server
+// Start express server
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`Express listening on ${port}`));
