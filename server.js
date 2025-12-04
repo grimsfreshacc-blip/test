@@ -111,6 +111,22 @@ app.get("/", (req, res) => {
   res.send("Skinchecker server running.");
 });
 
+// ⭐ BotGhost Login API Route (NEW)
+app.get("/login", (req, res) => {
+  const discordId = req.query.discordId;
+
+  if (!discordId) {
+    return res.status(400).json({ error: "Missing discordId" });
+  }
+
+  const url = buildEpicAuthUrl(discordId);
+
+  // Response BotGhost expects
+  return res.json({
+    url: url
+  });
+});
+
 // Start OAuth
 app.get("/auth/start", (req, res) => {
   const discordId = req.query.discordId;
