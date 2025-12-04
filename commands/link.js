@@ -1,26 +1,33 @@
-const { SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const {
+  SlashCommandBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+} = require("discord.js");
 
 module.exports = {
   data: new SlashCommandBuilder()
-    .setName('link')
-    .setDescription('Get a login button to link your Epic account.'),
+    .setName("link")
+    .setDescription("Link your Epic Games account."),
 
   async execute(interaction, helper) {
     const discordId = interaction.user.id;
-    // buildEpicAuthUrl is passed in helper by server.js
+
+    // Build Epic login URL using the helper in server.js
     const url = helper.buildEpicAuthUrl(discordId);
 
     const button = new ButtonBuilder()
-      .setLabel('Log in with Epic')
+      .setLabel("Log in with Epic")
       .setStyle(ButtonStyle.Link)
       .setURL(url);
 
     const row = new ActionRowBuilder().addComponents(button);
 
     await interaction.reply({
-      content: 'Click the button to login to Epic and link your account.',
+      content:
+        "🔗 Click below to **log in with Epic Games** and link your account.",
       components: [row],
-      ephemeral: true
+      ephemeral: true,
     });
-  }
+  },
 };
