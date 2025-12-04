@@ -1,65 +1,126 @@
 const {
   SlashCommandBuilder,
-  EmbedBuilder
+  EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
 } = require('discord.js');
+const fetch = require('node-fetch');
 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('locker')
-    .setDescription('Shows the Fortnite locker of a linked Epic account'),
+    .setDescription('Shows your full Fortnite locker with pages.'),
 
-  async execute(interaction, { userTokens, getAccountInfo }) {
+  async execute(interaction, helper) {
+    const { userTokens, getAccountInfo } = helper;
     const discordId = interaction.user.id;
 
-    // Check if user is linked
-    const tokenData = userTokens.get(discordId);
-
-    if (!tokenData) {
+    const tokens = userTokens.get(discordId);
+    if (!tokens) {
       return interaction.reply({
-        content: '❌ You are not linked. Use **/link** first.',
-        ephemeral: true
+        content: "❌ You are **not logged in**.\nUse `/link` first.",
+        ephemeral: true,
       });
     }
 
-    await interaction.reply({
-      content: '⏳ Fetching your Fortnite locker…',
-      ephemeral: true
-    });
+    await interaction.deferReply({ ephemeral: true });
 
     try {
-      const accessToken = tokenData.access_token;
-      const accountInfo = await getAccountInfo(accessToken);
-
-      if (!accountInfo) {
-        return interaction.followUp({
-          content: '⚠️ Could not fetch account info. Token may be expired.',
-          ephemeral: true
-        });
+      // Step 1 — Get Epic ID
+      const account = await getAccountInfo(tokens.access_token);
+      if (!account || !account.id) {
+        return interaction.editReply("❌ Could not fetch your Epic account.");
       }
 
-      // Rift-style placeholder embed until you connect the real FN API
-      const embed = new EmbedBuilder()
-        .setTitle(`${accountInfo.displayName}'s Locker`)
-        .setColor('#2b2d31')
-        .setThumbnail('https://cdn2.unrealengine.com/fortnite-og-meta-image-1920x1080-41ff10931c0d.jpg')
-        .setDescription('✔️ Epic account linked successfully.\n\n⚠️ **Real locker data requires the FN Locker API**.\nThis embed will automatically update once you add that endpoint.')
-        .addFields(
-          { name: 'Skins', value: '`Loading…`', inline: true },
-          { name: 'Pickaxes', value: '`Loading…`', inline: true },
-          { name: 'Emotes', value: '`Loading…`', inline: true },
+      const accountId = account.id;
+
+      // Step 2 — Fetch locker
+      const locker = await (
+        await fetch(`https://benbot.app/api/v1/locker/${accountId}`)
+      ).json();
+
+      const skins =
+        locker.items?.filter((i) => i.type?.value === 'outfit') || [];
+
+      if (!skins.length) {
+        return interaction.editReply("❌ No skins found in locker.");
+      }
+
+      // Sort skins alphabetically
+      skins.sort((a, b) => a.name.localeCompare(b.name));
+
+      // Pagination setup
+      let page = 0;
+      const pageSize = 1; // ONE SKIN PER PAGE (like Rift)
+      const maxPages = skins.length;
+
+      const generateEmbed = () => {
+        const skin = skins[page];
+
+        return new EmbedBuilder()
+          .setTitle(`${account.displayName}'s Locker`)
+          .setColor(0x00a6ff)
+          .setThumbnail(skin.images.icon || skin.images.smallIcon)
+          .addFields(
+            { name: "Skin", value: skin.name },
+            { name: "Rarity", value: skin.rarity?.value || "Unknown", inline: true }
+          )
+          .setImage(skin.images.featured || skin.images.icon)
+          .setFooter({ text: `Skin ${page + 1} / ${maxPages}` });
+      };
+
+      const row = () =>
+        new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId('prev')
+            .setLabel('⬅️ Previous')
+            .setStyle(ButtonStyle.Primary)
+            .setDisabled(page === 0),
+          new ButtonBuilder()
+            .setCustomId('next')
+            .setLabel('Next ➡️')
+            .setStyle(ButtonStyle.Primary)
+            .setDisabled(page === maxPages - 1)
         );
 
-      return interaction.followUp({
-        embeds: [embed],
-        ephemeral: true
+      // Initial reply
+      const message = await interaction.editReply({
+        embeds: [generateEmbed()],
+        components: [row()],
+      });
+
+      // Collector
+      const collector = message.createMessageComponentCollector({
+        time: 1000 * 60 * 5, // 5 minutes
+      });
+
+      collector.on('collect', async (btn) => {
+        if (btn.user.id !== discordId) {
+          return btn.reply({
+            content: "❌ This is not your locker.",
+            ephemeral: true,
+          });
+        }
+
+        if (btn.customId === 'next' && page < maxPages - 1) page++;
+        if (btn.customId === 'prev' && page > 0) page--;
+
+        await btn.update({
+          embeds: [generateEmbed()],
+          components: [row()],
+        });
+      });
+
+      collector.on('end', async () => {
+        try {
+          await message.edit({ components: [] });
+        } catch {}
       });
 
     } catch (err) {
       console.error(err);
-      return interaction.followUp({
-        content: '❌ Error fetching locker.',
-        ephemeral: true
-      });
+      return interaction.editReply("❌ Error loading locker.");
     }
-  }
+  },
 };
