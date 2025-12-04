@@ -3,56 +3,55 @@ const {
   EmbedBuilder,
   ActionRowBuilder,
   ButtonBuilder,
-  ButtonStyle,
-} = require('discord.js');
-const fetch = require('node-fetch');
+  ButtonStyle
+} = require("discord.js");
+
+const fetch = require("node-fetch");
 
 module.exports = {
   data: new SlashCommandBuilder()
-    .setName('locker')
-    .setDescription('Shows your full Fortnite locker with pages.'),
+    .setName("locker")
+    .setDescription("Shows your full Fortnite locker with pages."),
 
   async execute(interaction, helper) {
     const { userTokens, getAccountInfo } = helper;
     const discordId = interaction.user.id;
 
     const tokens = userTokens.get(discordId);
+
     if (!tokens) {
       return interaction.reply({
         content: "❌ You are **not logged in**.\nUse `/link` first.",
-        ephemeral: true,
+        ephemeral: true
       });
     }
 
     await interaction.deferReply({ ephemeral: true });
 
     try {
-      // Step 1 — Get Epic ID
+      // Get Epic account ID
       const account = await getAccountInfo(tokens.access_token);
       if (!account || !account.id) {
-        return interaction.editReply("❌ Could not fetch your Epic account.");
+        return interaction.editReply("❌ Could not fetch your Epic account data.");
       }
 
       const accountId = account.id;
 
-      // Step 2 — Fetch locker
-      const locker = await (
+      // Get locker using BenBot
+      const lockerData = await (
         await fetch(`https://benbot.app/api/v1/locker/${accountId}`)
       ).json();
 
-      const skins =
-        locker.items?.filter((i) => i.type?.value === 'outfit') || [];
+      const skins = lockerData.items?.filter(i => i.type?.value === "outfit") || [];
 
       if (!skins.length) {
-        return interaction.editReply("❌ No skins found in locker.");
+        return interaction.editReply("❌ No skins found in your locker.");
       }
 
-      // Sort skins alphabetically
+      // alphabetize  
       skins.sort((a, b) => a.name.localeCompare(b.name));
 
-      // Pagination setup
       let page = 0;
-      const pageSize = 1; // ONE SKIN PER PAGE (like Rift)
       const maxPages = skins.length;
 
       const generateEmbed = () => {
@@ -70,51 +69,50 @@ module.exports = {
           .setFooter({ text: `Skin ${page + 1} / ${maxPages}` });
       };
 
-      const row = () =>
+      const makeRow = () =>
         new ActionRowBuilder().addComponents(
           new ButtonBuilder()
-            .setCustomId('prev')
-            .setLabel('⬅️ Previous')
+            .setCustomId("prev")
+            .setLabel("⬅️ Previous")
             .setStyle(ButtonStyle.Primary)
             .setDisabled(page === 0),
+
           new ButtonBuilder()
-            .setCustomId('next')
-            .setLabel('Next ➡️')
+            .setCustomId("next")
+            .setLabel("Next ➡️")
             .setStyle(ButtonStyle.Primary)
             .setDisabled(page === maxPages - 1)
         );
 
-      // Initial reply
-      const message = await interaction.editReply({
+      const msg = await interaction.editReply({
         embeds: [generateEmbed()],
-        components: [row()],
+        components: [makeRow()]
       });
 
-      // Collector
-      const collector = message.createMessageComponentCollector({
-        time: 1000 * 60 * 5, // 5 minutes
+      const collector = msg.createMessageComponentCollector({
+        time: 1000 * 60 * 5
       });
 
-      collector.on('collect', async (btn) => {
+      collector.on("collect", async btn => {
         if (btn.user.id !== discordId) {
           return btn.reply({
             content: "❌ This is not your locker.",
-            ephemeral: true,
+            ephemeral: true
           });
         }
 
-        if (btn.customId === 'next' && page < maxPages - 1) page++;
-        if (btn.customId === 'prev' && page > 0) page--;
+        if (btn.customId === "next" && page < maxPages - 1) page++;
+        if (btn.customId === "prev" && page > 0) page--;
 
         await btn.update({
           embeds: [generateEmbed()],
-          components: [row()],
+          components: [makeRow()]
         });
       });
 
-      collector.on('end', async () => {
+      collector.on("end", async () => {
         try {
-          await message.edit({ components: [] });
+          await msg.edit({ components: [] });
         } catch {}
       });
 
@@ -122,5 +120,5 @@ module.exports = {
       console.error(err);
       return interaction.editReply("❌ Error loading locker.");
     }
-  },
+  }
 };
