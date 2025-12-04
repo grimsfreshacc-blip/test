@@ -1,26 +1,38 @@
-const { SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { 
+  SlashCommandBuilder, 
+  EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle 
+} = require("discord.js");
 
 module.exports = {
   data: new SlashCommandBuilder()
-    .setName('link')
-    .setDescription('Link your Epic Games account to use the skinchecker.'),
+    .setName("link")
+    .setDescription("Connect your Fortnite account to the SkinChecker."),
 
   async execute(interaction, { buildEpicAuthUrl }) {
     const discordId = interaction.user.id;
 
-    // Generate OAuth URL
-    const authUrl = buildEpicAuthUrl(discordId);
+    const loginUrl = buildEpicAuthUrl(discordId);
 
-    // Create button
-    const button = new ButtonBuilder()
-      .setLabel('Link Epic Games Account')
-      .setURL(authUrl)
-      .setStyle(ButtonStyle.Link);
+    const embed = new EmbedBuilder()
+      .setTitle("🔗 Fortnite Login")
+      .setDescription(
+        "Click the button below to log in with **Epic Games**.\n\n" +
+        "After logging in, return to Discord and use `/locker`."
+      )
+      .setColor(0x00a6ff);
 
-    const row = new ActionRowBuilder().addComponents(button);
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setLabel("Login with Epic Games")
+        .setStyle(ButtonStyle.Link)
+        .setURL(loginUrl)
+    );
 
-    await interaction.reply({
-      content: 'Click the button below to link your Epic Games account:',
+    return interaction.reply({
+      embeds: [embed],
       components: [row],
       ephemeral: true
     });
